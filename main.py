@@ -15,7 +15,7 @@ from starlette.responses import FileResponse
 from dotenv import load_dotenv
 
 #=============START ROUTE HERES=============#
-from app.core.autheticate import autenticate
+from app.core.auth import autenticate
 
 #=============END ROUTE HERES================#
 

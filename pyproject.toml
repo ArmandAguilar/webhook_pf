@@ -6,6 +6,11 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.116.1",
+    "jose>=1.0.0",
+    "jwt>=1.4.0",
+    "load-dotenv>=0.1.0",
     "pandas>=2.3.1",
+    "pydantic>=2.11.7",
+    "python-jose>=3.5.0",
     "requests>=2.32.4",
 ]

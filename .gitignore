@@ -136,3 +136,4 @@ pyrightconfig.json
 *.swp
 *.tmp
 *.bak
+develop_db/

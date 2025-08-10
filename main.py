@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 #=============START ROUTE HERES=============#
 from app.core.auth import autenticate
+from app.routes.messages import mensages_routes
 
 #=============END ROUTE HERES================#
 
@@ -77,7 +78,13 @@ async def authenticate(request: Request, call_next):
 app.openapi = custom_openapi
 
 #=============LOAD ROUTE HERES=============#
+@app.get("/")
+async def root():
+    """Endpoint de verificación"""
+    return {"message": "Webhook Teamwork - Profesor Forta activo", "status": "running"}
+
 app.include_router(autenticate.router)
+app.include_router(mensages_routes.router)
 
 
 #=============END ROUTE HERES================#

@@ -4,19 +4,6 @@ from app.db.database import Base
 import json
 
 
-class Message(Base):
-    __tablename__ = "messages"
-
-    id = Column(Integer, primary_key=True, index=True)
-    teamwork_id = Column(Integer, unique=True, index=True)
-    project_id = Column(Integer)
-    author_id = Column(Integer)
-    author_name = Column(String(200))
-    author_email = Column(String(200))
-    created_at = Column(DateTime) 
-    received_at = Column(DateTime, server_default=func.now())
-    message_content = Column(Text)
-
 class MessageReplay(Base):
     __tablename__ = "messages_replay"
 

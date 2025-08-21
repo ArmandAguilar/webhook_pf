@@ -26,4 +26,30 @@ class MessageReplay(Base):
     post_id = Column(Integer)
     teamwork_id = Column(Integer)
     post_body = Column(Text)
-    created_at = Column(DateTime) 
+    created_at = Column(DateTime)
+
+class Comments(Base):
+    __tablename__ = "comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    autor_id = Column(Integer)
+    autor_name = Column(String(200))
+    projectId = Column(Integer)
+    objectId = Column(Integer)
+    objectType = Column(String(200))
+    dateCreated = Column(DateTime)
+    body = Column(Text)
+
+class Tasks(Base):
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    id_task = Column(Integer)
+    taskListId = Column(Integer)
+    task_name = Column(String(200))
+    id_project = Column(Integer)
+    project_name = Column(String(200))
+    id_usuario = Column(Integer)
+    name_usuario = Column(String(200))
+    description = Column(Text)
+    dateCreated = Column(DateTime)

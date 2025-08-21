@@ -17,7 +17,9 @@ from dotenv import load_dotenv
 #=============START ROUTE HERES=============#
 from app.core.auth import autenticate
 from app.routes.messages import mensages_routes
-
+from app.routes.task import task_routes
+from app.routes.comments import comments_routes
+from app.routes.documents import documents_routes
 #=============END ROUTE HERES================#
 
 load_dotenv()
@@ -85,6 +87,7 @@ async def root():
 
 app.include_router(autenticate.router)
 app.include_router(mensages_routes.router)
-
-
+app.include_router(task_routes.router)
+app.include_router(comments_routes.router)
+app.include_router(documents_routes.router)
 #=============END ROUTE HERES================#

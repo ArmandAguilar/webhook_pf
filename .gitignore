@@ -139,3 +139,4 @@ pyrightconfig.json
 develop_db/
 command.txt
 load_luz.bat
+app/core/tmp

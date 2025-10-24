@@ -4,7 +4,8 @@ from sqlalchemy.orm import sessionmaker
 import os
 
 # URL de la base de datos SQLite
-SQLALCHEMY_DATABASE_URL = "sqlite:////Users/armand/Documents/httdocs/Forta/webhook_pf/develop_db/teamwork_messages.db"
+#SQLALCHEMY_DATABASE_URL = "sqlite:////Users/armand/Documents/httdocs/Forta/webhook_pf/develop_db/teamwork_messages.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:///C:/Users/Proyectos/Documents/Proyectos/webhook_pf/develop_db/teamwork_messages.db"
 
 # Crear el engine
 engine = create_engine(

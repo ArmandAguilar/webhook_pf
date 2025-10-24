@@ -76,7 +76,7 @@ TEAMWORK_BASE_URL = os.getenv("TEAMWORK_BASE_URL")
 TEAMWORK_API_KEY = os.getenv("TEAMWORK_API_KEY")
 TEAMWORK_API_URL = f"{TEAMWORK_BASE_URL}/projects/api/v3/tasks/{{task_id}}.json"
 
-TMP_DIR = Path("tmp")
+TMP_DIR = Path("app/core/tmp")
 TMP_DIR.mkdir(exist_ok=True)
 
 DB_CONFIG = {
@@ -88,7 +88,7 @@ DB_CONFIG = {
 }
 
 
-@router.post("/webhook/document/get")
+@router.get("/webhook/document/get")
 async def teamwork_document_get(request: Request):
     """Webhook que acepta JSON o texto plano."""
     try:

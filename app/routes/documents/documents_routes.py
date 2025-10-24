@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
 import httpx
-import asyncio
+from app.db.db import dbMysql
 from pathlib import Path
 # Importaciones locales
 from app.db.database import get_db
@@ -70,23 +70,10 @@ async def teamwork_webhook(
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 #-------------------------------------------------------------------------------
-#Variables de entorno 
+#Variables de entorno (cambiar a la parte superior)
 load_dotenv()  
-TEAMWORK_BASE_URL = os.getenv("TEAMWORK_BASE_URL")
-TEAMWORK_API_KEY = os.getenv("TEAMWORK_API_KEY")
-TEAMWORK_API_URL = f"{TEAMWORK_BASE_URL}/projects/api/v3/tasks/{{task_id}}.json"
-
 TMP_DIR = Path("app/core/tmp")
 TMP_DIR.mkdir(exist_ok=True)
-
-DB_CONFIG = {
-    "host": os.getenv("_HOST_MySQL_"),
-    "user": os.getenv("_USER_MySQL_"),
-    "password": os.getenv("_PASS_MySQL_"),
-    "database": os.getenv("_DB_MySQL_"),
-    "cursorclass": pymysql.cursors.DictCursor
-}
-
 
 @router.post("/webhook/document/get")
 async def teamwork_document_get(request: Request):
@@ -112,14 +99,11 @@ async def teamwork_document_get(request: Request):
         
 
         # --- Consulta de la tarea ---
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                #TEAMWORK_API_URL.format(task_id=task_id),
-                f"{os.getenv("TEAMWORK_BASE_URL")}/projects/api/v3/tasks/{task_id}.json",
-                auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
-                timeout=10.0
-            )
-
+        response = httpx.get(
+            f"{os.getenv('TEAMWORK_BASE_URL')}/projects/api/v3/tasks/{task_id}.json",
+            auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
+            timeout=10.0
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail="Error al consultar Teamwork")
 
@@ -133,75 +117,63 @@ async def teamwork_document_get(request: Request):
         attachments_data = {}
 
         if attachment_ids:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                tasks = [
-                    client.get(f"{TEAMWORK_BASE_URL}/files/{att_id}.json", auth=(TEAMWORK_API_KEY, "x"))
-                    for att_id in attachment_ids
-                ]
-                responses = await asyncio.gather(*tasks, return_exceptions=True)
+            attachments_data = {}
 
-                for att_id, resp in zip(attachment_ids, responses):
-                    if isinstance(resp, Exception):
-                        logger.error(f"Error HTTP al consultar {att_id}: {resp}")
-                        continue
+            for att_id in attachment_ids:
+                try:
+                    # Obtener metadatos del archivo
+                    att_url = f"{os.getenv("TEAMWORK_BASE_URL")}/files/{att_id}.json"
+                    resp = requests.get(att_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=10)
 
                     if resp.status_code == 200:
                         att_json = resp.json()
                         file_info = att_json.get("file", {})
+
                         attachments_data[att_id] = {
                             "name": file_info.get("name"),
                             "size": file_info.get("size"),
                             "fecha": file_info.get("createdAt")
                         }
-                        # Descargar archivo del preview-url
-                        preview_url = file_info.get("preview-URL")
+
+                        # Descargar archivo desde preview-url
+                        preview_url = file_info.get("preview-url") or file_info.get("preview-URL")
                         if preview_url:
                             file_name = file_info.get("name", f"{att_id}.file")
                             file_path = TMP_DIR / file_name
+
                             try:
-                                async with httpx.AsyncClient(timeout=10.0) as download_client:
-                                    file_resp = await download_client.get(preview_url, follow_redirects=True)
-                                    if file_resp.status_code == 200:
-                                        file_path.write_bytes(file_resp.content)
-                                        logger.info(f"📥 Archivo descargado: {file_path}")
-                                    else:
-                                        logger.warning(f"No se pudo descargar {file_name} ({file_resp.status_code})")
+                                file_resp = requests.get(preview_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=15, allow_redirects=True)
+                                if file_resp.status_code == 200:
+                                    file_path.write_bytes(file_resp.content)
+                                    logger.info(f"📥 Archivo descargado: {file_path}")
+                                else:
+                                    logger.warning(f"No se pudo descargar {file_name} ({file_resp.status_code})")
                             except Exception as e:
                                 logger.error(f"Error descargando {file_name}: {e}")
+
                     else:
                         logger.warning(f"⚠️ No se pudo recuperar attachment {att_id}: {resp.status_code}")
 
+                except Exception as e:
+                    logger.error(f"Error procesando attachment {att_id}: {e}")
         # --- Insertar en la base de datos ---
         if attachments_data:
             try:
-                import pymysql
-                from datetime import datetime
-                import os
-
-                connection = pymysql.connect(
-                    host=os.getenv("_HOST_MySQL_"),
-                    user=os.getenv("_USER_MySQL_"),
-                    password=os.getenv("_PASS_MySQL_"),
-                    database=os.getenv("_DB_MySQL_"),
-                    cursorclass=pymysql.cursors.DictCursor,
-                    autocommit=True
-                )
-
+                connection = dbMysql.conMysql()
                 with connection.cursor() as cursor:
+
+                    # Insertar todos los attachments, ignorando los que ya existan
                     sql = """
-                        INSERT INTO files_procceded 
+                        INSERT IGNORE INTO files_procceded 
                         (id_tw, id_tarea, id_file, file_name, size, fecha, procceded)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE
-                            file_name = VALUES(file_name),
-                            size = VALUES(size),
-                            fecha = VALUES(fecha)
                     """
+
                     data_to_insert = []
                     for att_id, data in attachments_data.items():
                         fecha_raw = data.get("fecha")
                         try:
-                            fecha = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00"))
+                            fecha = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00")) if fecha_raw else datetime.utcnow()
                         except Exception:
                             fecha = datetime.utcnow()
 
@@ -216,14 +188,16 @@ async def teamwork_document_get(request: Request):
                         ))
 
                     cursor.executemany(sql, data_to_insert)
-                    logger.info(f"✅ {len(data_to_insert)} archivos registrados en la BD")
+                    connection.commit()
+                    logger.info(f"✅ {len(data_to_insert)} archivos procesados (duplicados ignorados)")
 
             except Exception as db_err:
                 logger.error(f"❌ Error al insertar en la base de datos: {db_err}")
+
             finally:
                 try:
                     connection.close()
-                except:
+                except Exception:
                     pass
 
         # --- Construir respuesta ---

@@ -2,10 +2,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+from pathlib import Path
 
-# URL de la base de datos SQLite
-#SQLALCHEMY_DATABASE_URL = "sqlite:////Users/armand/Documents/httdocs/Forta/webhook_pf/develop_db/teamwork_messages.db"
-SQLALCHEMY_DATABASE_URL = "sqlite:///C:/Users/Proyectos/Documents/Proyectos/webhook_pf/develop_db/teamwork_messages.db"
+# Ruta a la base de datos SQLite (usando ruta relativa)
+base_dir = Path(__file__).resolve().parent.parent.parent  # Navega hasta la raíz del proyecto
+path_db = base_dir / "develop_db" / "teamwork_messages.db"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{path_db.absolute()}"
 
 # Crear el engine
 engine = create_engine(

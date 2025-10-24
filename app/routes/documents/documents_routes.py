@@ -88,7 +88,7 @@ DB_CONFIG = {
 }
 
 
-@router.get("/webhook/document/get")
+@router.post("/webhook/document/get")
 async def teamwork_document_get(request: Request):
     """Webhook que acepta JSON o texto plano."""
     try:
@@ -98,8 +98,9 @@ async def teamwork_document_get(request: Request):
             payload = json.loads(body)
         except json.JSONDecodeError:
             payload = {"raw": body.decode("utf-8")}
+        
         #obtener payload al subir archivo
-        #logger.info(f"Payload recibido: {payload}")
+        logger.info(f"Payload recibido: {payload}")
 
         task_id = payload.get("task", {}).get("id")
         project_id = payload.get("project", {}).get("id")
@@ -113,8 +114,9 @@ async def teamwork_document_get(request: Request):
         # --- Consulta de la tarea ---
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                TEAMWORK_API_URL.format(task_id=task_id),
-                auth=(TEAMWORK_API_KEY, "x"),
+                #TEAMWORK_API_URL.format(task_id=task_id),
+                f"{os.getenv("TEAMWORK_BASE_URL")}/projects/api/v3/tasks/{task_id}.json",
+                auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
                 timeout=10.0
             )
 

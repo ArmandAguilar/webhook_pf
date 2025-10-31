@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from app.db.db import dbMysql
-
+from app.models.task.tasks_model import WebhookTaskCommentsPayload
 # Importaciones locales
 from app.db.database import get_db
 from app.utilities.utilities_messages import is_message_for_profesor_forta, init_database
@@ -140,23 +140,23 @@ async def teamwork_webhook(
 load_dotenv()  
 
 @router.post("/webhook/task/comments", tags=["TASK"])
-async def teamwork_task_comments(request: Request):
-    """Webhook que obtiene y guarda comentarios con @ProfesorF desde Teamwork."""
+async def teamwork_task_comments(payload: WebhookTaskCommentsPayload):
+    """
+    Webhook que obtiene y guarda comentarios con @ProfesorF desde Teamwork.
+    """
     try:
-        body = await request.body()
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            payload = {"raw": body.decode("utf-8")}
-
         logger.info("🔹 Payload recibido:")
-        logger.info(json.dumps(payload, indent=4))
+        logger.info(payload.model_dump_json(indent=4, ensure_ascii=False))
 
-        comment = payload.get("comment", {})
-        task_id = comment.get("objectId")
-        project_id = comment.get("projectId")
-        author_id = comment.get("userId")
-        comment_body = comment.get("body", "")
+        # Extraer comentario y campos
+        comment = payload.comment
+        if not comment:
+            return {"status": "ignored", "reason": "No hay comentario en el payload"}
+
+        task_id = comment.objectId
+        project_id = comment.projectId
+        author_id = comment.author_id
+        comment_body = comment.body or ""
 
         if not task_id or not project_id:
             raise HTTPException(status_code=400, detail="Faltan 'objectId' o 'projectId' en el payload")

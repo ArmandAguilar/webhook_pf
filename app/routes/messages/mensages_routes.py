@@ -16,6 +16,7 @@ from app.db.db import dbMysql
 from app.utilities.utilities_messages import is_message_for_profesor_forta, init_database
 from app.utilities.raw_text import strip_html
 from app.models.database.message import Message, MessageReplay
+from app.models.messages.messages_model import WebhookPayload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -264,24 +265,17 @@ load_dotenv()
 
 
 @router.post("/webhook/messages/get", tags=["Messages"])
-async def teamwork_messages_get(request: Request):
+async def teamwork_messages_get(payload: WebhookPayload):
     """
     Webhook que recibe mensajes o replies desde Teamwork y los guarda en la BD.
     Guarda solo si el mensaje contiene @profesorf.
     """
     try:
-        body = await request.body()
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            payload = {"raw": body.decode("utf-8")}
-
         logger.info("🔹 Payload recibido:")
-        logger.info(json.dumps(payload, indent=4, ensure_ascii=False))
+        logger.info(payload.model_dump_json(indent=4, ensure_ascii=False))
 
-        # --- Variables base ---
-        message_data = payload.get("message")
-        reply_data = payload.get("messagePost")
+        message_data = payload.message
+        reply_data = payload.messagePost
 
         project_id = None
         message_id = None
@@ -295,21 +289,19 @@ async def teamwork_messages_get(request: Request):
         if message_data:
             logger.info("🆕 Evento detectado: creación de mensaje")
 
-            message_id = message_data.get("id")
-            project_id = message_data.get("projectId") or message_data.get("project-id")
-            author_id = payload.get("eventCreator", {}).get("id")
+            message_id = message_data.id
+            project_id = message_data.projectId or message_data.project_id
+            author_id = (payload.eventCreator or {}).get("id")
 
             post_data = message_data.get("post", {})
             post_id = post_data.get("id")
             body_text = post_data.get("raw-body") or post_data.get("body")
             created_at = post_data.get("dateCreated") or post_data.get("last-changed-on")
 
-            # Limpieza de HTML
             if body_text and "<" in body_text:
                 soup = BeautifulSoup(body_text, "html.parser")
                 body_text = soup.get_text(" ", strip=True)
 
-            # Determinar tipo por categoría
             category_name = (message_data.get("categoryName") or "").strip().lower()
             if category_name == "inbox":
                 tipo = "email"
@@ -318,22 +310,22 @@ async def teamwork_messages_get(request: Request):
         elif reply_data:
             logger.info("💬 Evento detectado: reply a mensaje existente")
 
-            message_id = reply_data.get("messageId")
-            author_id = reply_data.get("userId") or payload.get("eventCreator", {}).get("id")
-            post_id = reply_data.get("id")
-            body_text = reply_data.get("raw-body") or reply_data.get("body")
-            created_at = reply_data.get("dateCreated") or reply_data.get("last-changed-on")
+            message_id = reply_data.messageId
+            author_id = reply_data.userId or (creator.id if creator else None)
+            post_id = reply_data.id
+            body_text = reply_data.raw_body or reply_data.body
+            created_at = reply_data.dateCreated or reply_data.last_changed_on
 
-            # Limpiar HTML
+            # Limpiar HTML si existe contenido con etiquetas
             if body_text and "<" in body_text:
+                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(body_text, "html.parser")
                 body_text = soup.get_text(" ", strip=True)
 
-            # Consultar mensaje original para obtener project_id
             teamwork_url = f"{os.getenv('TEAMWORK_BASE_URL')}/messages/{message_id}.json"
             resp = requests.get(teamwork_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=10)
-            logger.info(f"🌐 Consultando Teamwork: {teamwork_url}")
-            logger.info(f"🔍 Status Code: {resp.status_code}")
+
+            logger.info(f"🌐 Consultando Teamwork: {teamwork_url} (status {resp.status_code})")
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -364,13 +356,12 @@ async def teamwork_messages_get(request: Request):
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
 
-                # Parsear fecha ISO
                 try:
                     fecha = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else datetime.utcnow()
                 except Exception:
                     fecha = datetime.utcnow()
 
-                data_to_insert = (
+                cursor.execute(sql, (
                     project_id,
                     message_id,
                     author_id,
@@ -379,9 +370,7 @@ async def teamwork_messages_get(request: Request):
                     tipo,
                     fecha,
                     0
-                )
-
-                cursor.execute(sql, data_to_insert)
+                ))
                 connection.commit()
                 logger.info("✅ Mensaje insertado correctamente en la base de datos")
 
@@ -393,7 +382,6 @@ async def teamwork_messages_get(request: Request):
             except Exception:
                 pass
 
-        # --- Respuesta final ---
         response_data = {
             "status": "ok",
             "project_id": project_id,

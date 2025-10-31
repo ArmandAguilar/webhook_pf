@@ -2,13 +2,16 @@ import json
 import requests
 import os
 import logging
+from dotenv import load_dotenv
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 # Importaciones locales
 from app.db.database import get_db
+from app.db.db import dbMysql
 #from app.models.messages.messages_model import WebhookPayload
 from app.utilities.utilities_messages import is_message_for_profesor_forta, init_database
 from app.utilities.raw_text import strip_html
@@ -253,3 +256,160 @@ async def teamwork_webhook(
 #     except Exception as e:
 #         logger.error(f"Error al obtener mensaje {teamwork_id}: {e}")
 #         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+#-------------------------------------------------------------------------------
+#Variables de entorno (cambiar a la parte superior)
+load_dotenv() 
+
+
+@router.post("/webhook/messages/get", tags=["Messages"])
+async def teamwork_messages_get(request: Request):
+    """
+    Webhook que recibe mensajes o replies desde Teamwork y los guarda en la BD.
+    Guarda solo si el mensaje contiene @profesorf.
+    """
+    try:
+        body = await request.body()
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {"raw": body.decode("utf-8")}
+
+        logger.info("🔹 Payload recibido:")
+        logger.info(json.dumps(payload, indent=4, ensure_ascii=False))
+
+        # --- Variables base ---
+        message_data = payload.get("message")
+        reply_data = payload.get("messagePost")
+
+        project_id = None
+        message_id = None
+        author_id = None
+        post_id = None
+        body_text = None
+        created_at = None
+        tipo = "plataforma"
+
+        # 🆕 Evento: mensaje nuevo
+        if message_data:
+            logger.info("🆕 Evento detectado: creación de mensaje")
+
+            message_id = message_data.get("id")
+            project_id = message_data.get("projectId") or message_data.get("project-id")
+            author_id = payload.get("eventCreator", {}).get("id")
+
+            post_data = message_data.get("post", {})
+            post_id = post_data.get("id")
+            body_text = post_data.get("raw-body") or post_data.get("body")
+            created_at = post_data.get("dateCreated") or post_data.get("last-changed-on")
+
+            # Limpieza de HTML
+            if body_text and "<" in body_text:
+                soup = BeautifulSoup(body_text, "html.parser")
+                body_text = soup.get_text(" ", strip=True)
+
+            # Determinar tipo por categoría
+            category_name = (message_data.get("categoryName") or "").strip().lower()
+            if category_name == "inbox":
+                tipo = "email"
+
+        # 💬 Evento: reply
+        elif reply_data:
+            logger.info("💬 Evento detectado: reply a mensaje existente")
+
+            message_id = reply_data.get("messageId")
+            author_id = reply_data.get("userId") or payload.get("eventCreator", {}).get("id")
+            post_id = reply_data.get("id")
+            body_text = reply_data.get("raw-body") or reply_data.get("body")
+            created_at = reply_data.get("dateCreated") or reply_data.get("last-changed-on")
+
+            # Limpiar HTML
+            if body_text and "<" in body_text:
+                soup = BeautifulSoup(body_text, "html.parser")
+                body_text = soup.get_text(" ", strip=True)
+
+            # Consultar mensaje original para obtener project_id
+            teamwork_url = f"{os.getenv('TEAMWORK_BASE_URL')}/messages/{message_id}.json"
+            resp = requests.get(teamwork_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=10)
+            logger.info(f"🌐 Consultando Teamwork: {teamwork_url}")
+            logger.info(f"🔍 Status Code: {resp.status_code}")
+
+            if resp.status_code == 200:
+                data = resp.json()
+                post_data = data.get("post", {})
+                project_id = post_data.get("project-id")
+                category_name = (post_data.get("category-name") or "").strip().lower()
+                if category_name == "inbox":
+                    tipo = "email"
+            else:
+                logger.warning(f"⚠️ No se pudo recuperar project_id del mensaje {message_id}")
+
+        # --- Validaciones ---
+        if not body_text:
+            logger.warning("⚠️ No hay cuerpo en el mensaje, se ignora.")
+            return {"status": "ignored", "reason": "empty body"}
+
+        if "@profesorf" not in body_text.lower():
+            logger.info("🚫 Mensaje ignorado: no contiene @profesorf.")
+            return {"status": "ignored", "reason": "no mention"}
+
+        # --- Insertar en la base de datos ---
+        try:
+            connection = dbMysql.conMysql()
+            with connection.cursor() as cursor:
+                sql = """
+                    INSERT IGNORE INTO messages 
+                    (id_tw, id_mensaje, id_replay_usuario, id_post, mensaje, tipo, fecha, procceded)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """
+
+                # Parsear fecha ISO
+                try:
+                    fecha = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else datetime.utcnow()
+                except Exception:
+                    fecha = datetime.utcnow()
+
+                data_to_insert = (
+                    project_id,
+                    message_id,
+                    author_id,
+                    post_id,
+                    body_text,
+                    tipo,
+                    fecha,
+                    0
+                )
+
+                cursor.execute(sql, data_to_insert)
+                connection.commit()
+                logger.info("✅ Mensaje insertado correctamente en la base de datos")
+
+        except Exception as db_err:
+            logger.error(f"❌ Error al insertar en la base de datos: {db_err}")
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        # --- Respuesta final ---
+        response_data = {
+            "status": "ok",
+            "project_id": project_id,
+            "message_id": message_id,
+            "author_id": author_id,
+            "post_id": post_id,
+            "body": body_text,
+            "created_at": created_at,
+            "type": tipo,
+        }
+
+        logger.info(f"📤 Respuesta final: {response_data}")
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"💥 Error procesando webhook: {e}")
+        raise HTTPException(status_code=500, detail="Error interno del servidor")

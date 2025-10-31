@@ -75,7 +75,7 @@ load_dotenv()
 TMP_DIR = Path("app/core/tmp")
 TMP_DIR.mkdir(exist_ok=True)
 
-@router.post("/webhook/document/get")
+@router.post("/webhook/document/get", tags=['TASK'])
 async def teamwork_document_get(request: Request):
     """Webhook que acepta JSON o texto plano."""
     try:

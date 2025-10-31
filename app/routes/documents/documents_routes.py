@@ -17,6 +17,7 @@ from app.db.database import get_db
 from app.utilities.utilities_messages import is_message_for_profesor_forta, init_database
 from app.utilities.raw_text import strip_html
 from app.models.database.message import Tasks
+from app.models.documents.documents_model import WebhookDocumentPayload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,21 +77,17 @@ TMP_DIR = Path("app/core/tmp")
 TMP_DIR.mkdir(exist_ok=True)
 
 @router.post("/webhook/document/get", tags=['TASK'])
-async def teamwork_document_get(request: Request):
-    """Webhook que acepta JSON o texto plano."""
+async def teamwork_document_get(payload: WebhookDocumentPayload):
+    """
+    Webhook que acepta y procesa archivos adjuntos subidos desde Teamwork.
+    """
     try:
-        body = await request.body()
+        logger.info("🔹 Payload recibido:")
+        logger.info(payload.model_dump_json(indent=4, ensure_ascii=False))
 
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            payload = {"raw": body.decode("utf-8")}
-        
-        #obtener payload al subir archivo
-        logger.info(f"Payload recibido: {payload}")
-
-        task_id = payload.get("task", {}).get("id")
-        project_id = payload.get("project", {}).get("id")
+        # Extraer datos principales
+        task_id = payload.task.id if payload.task else None
+        project_id = payload.project.id if payload.project else None
 
         if not task_id or not project_id:
             raise HTTPException(status_code=400, detail="Faltan 'task.id' o 'project.id' en el payload")

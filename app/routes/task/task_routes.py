@@ -140,146 +140,111 @@ async def teamwork_webhook(
 load_dotenv()  
 
 @router.post("/webhook/task/comments", tags=["TASK"])
-async def teamwork_task_comments(payload: WebhookTaskCommentsPayload):
+async def teamwork_task_comments(payload: dict):
     """
-    Webhook que obtiene y guarda comentarios con @ProfesorF desde Teamwork.
+    Webhook que recibe un comentario recién creado desde Teamwork.
+    Guarda en BD solo si contiene @ProfesorF (limpiando el HTML)
+    y responde con un mensaje automático de confirmación.
     """
     try:
         logger.info("🔹 Payload recibido:")
-        logger.info(payload.model_dump_json(indent=4, ensure_ascii=False))
+        logger.info(json.dumps(payload, indent=4, ensure_ascii=False))
 
-        # Extraer comentario y campos
-        comment = payload.comment
+        comment = payload.get("comment")
         if not comment:
             return {"status": "ignored", "reason": "No hay comentario en el payload"}
 
-        task_id = comment.objectId
-        project_id = comment.projectId
-        author_id = comment.author_id
-        comment_body = comment.body or ""
+        # --- Datos base ---
+        task_id = comment.get("objectId")
+        project_id = comment.get("projectId")
+        comment_id = comment.get("id")
+
+        # ✅ CORRECCIÓN: el campo correcto es userId, no authorId
+        author_id = comment.get("userId") or payload.get("eventCreator", {}).get("id") or 0
+
+        comment_body = comment.get("body", "")
 
         if not task_id or not project_id:
             raise HTTPException(status_code=400, detail="Faltan 'objectId' o 'projectId' en el payload")
 
-        # 🚫 Evitar bucle infinito (si el comentario lo hizo el bot o ya contiene el texto del sistema)
-        if "Mensaje recibido por el sistema" in comment_body:
+        # 🧹 Limpiar el texto HTML
+        clean_body = strip_html(comment_body)
+        logger.info(f"🧹 Texto limpio: {clean_body}")
+
+        # 🚫 Evitar procesar mensajes automáticos del sistema
+        if "Mensaje recibido por el sistema" in clean_body:
             logger.info("⏭️ Comentario automático detectado, no se procesará.")
             return {"status": "ignored", "reason": "Comentario del sistema detectado."}
 
-        logger.info(f"✅ Task ID: {task_id} | Project ID: {project_id}")
+        # 🚫 Evitar procesar si no menciona al profesor
+        if "@profesorf" not in clean_body.lower() and "@profesorf" not in clean_body.lower():
+            logger.info("🚫 No contiene @ProfesorF, se ignora.")
+            return {"status": "ignored", "reason": "No contiene mención al profesor."}
 
-        # --- Obtener comentarios de la tarea ---
-        teamwork_url = f"{os.getenv('TEAMWORK_BASE_URL')}/projects/api/v3/tasks/{task_id}/comments.json"
-        response = requests.get(
-            teamwork_url,
-            auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
-            timeout=10
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail="Error al obtener comentarios de Teamwork")
+        # --- Guardar en BD ---
+        try:
+            connection = dbMysql.conMysql()
+            with connection.cursor() as cursor:
+                sql = """
+                    INSERT IGNORE INTO task_comments_procceded
+                    (id_tw, id_tarea, id_comment, id_replay_usuario, mensaje, Fecha, Procceded)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """
 
-        comments_data = response.json().get("comments", [])
-        logger.info(f"💬 Total de comentarios encontrados: {len(comments_data)}")
+                fecha_raw = comment.get("dateCreated")
+                try:
+                    fecha = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00")) if fecha_raw else datetime.utcnow()
+                except Exception:
+                    fecha = datetime.utcnow()
 
-        # --- Filtrar los que contengan @ProfesorF ---
-        profesor_comments = [c for c in comments_data if "@ProfesorF" in c.get("body", "")]
-        logger.info(f"🎯 Comentarios con @ProfesorF: {len(profesor_comments)}")
+                cursor.execute(sql, (
+                    project_id,           # id_tw
+                    task_id,              # id_tarea
+                    comment_id,           # id_comment
+                    author_id,            # id_replay_usuario ✅ ahora correcto
+                    clean_body,           # mensaje
+                    fecha.date(),         # Fecha
+                    0                     # Procceded
+                ))
+                connection.commit()
+                logger.info("✅ Comentario insertado correctamente en BD")
 
-        detailed_comments = []
-        for c in profesor_comments:
-            comment_id = c.get("id")
-            if not comment_id:
-                continue
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
 
-            comment_url = f"{os.getenv('TEAMWORK_BASE_URL')}/comments/{comment_id}.json"
-            detail_resp = requests.get(
-                comment_url,
+        # --- 💬 Enviar respuesta automática ---
+        try:
+            reply_url = f"{os.getenv('TEAMWORK_BASE_URL')}/tasks/{task_id}/comments.json"
+            reply_body = ":white_check_mark: Mensaje recibido por el sistema."
+            reply_payload = {"comment": {"body": reply_body, "isPrivate": False}}
+
+            reply_resp = requests.post(
+                reply_url,
                 auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
+                headers={"Content-Type": "application/json"},
+                json=reply_payload,
                 timeout=10
             )
 
-            if detail_resp.status_code == 200:
-                comment_detail = detail_resp.json().get("comment", {})
-                detailed_comments.append({
-                    "id_comment": comment_detail.get("id"),
-                    "author_id": comment_detail.get("author-id"),
-                    "body": comment_detail.get("body"),
-                    "date": comment_detail.get("datetime")
-                })
+            if reply_resp.status_code == 201:
+                logger.info(f"💬 Respuesta automática publicada en la tarea {task_id}")
+            else:
+                logger.warning(f"⚠️ No se pudo publicar la respuesta ({reply_resp.status_code})")
 
-        logger.info(f"✅ Comentarios procesados: {len(detailed_comments)}")
+        except Exception as reply_err:
+            logger.error(f"❌ Error al publicar respuesta automática: {reply_err}")
 
-        # --- Guardar en BD sin duplicar ---
-        if detailed_comments:
-            try:
-                connection = dbMysql.conMysql()
-                with connection.cursor() as cursor:
-                    sql = """
-                        INSERT IGNORE INTO task_comments_procceded
-                        (id_tw, id_tarea, id_comment, id_replay_usuario, mensaje, Fecha, Procceded)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """
+        return {
+            "status": "ok",
+            "message": "Comentario procesado correctamente.",
+            "author_id": author_id,
+            "task_id": task_id,
+            "project_id": project_id
+        }
 
-                    data_to_insert = []
-                    for c in detailed_comments:
-                        fecha_raw = c.get("date")
-                        try:
-                            fecha = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00")) if fecha_raw else datetime.utcnow()
-                        except Exception:
-                            fecha = datetime.utcnow()
-
-                        data_to_insert.append((
-                            project_id,
-                            task_id,
-                            c.get("id_comment"),
-                            c.get("author_id"),
-                            c.get("body"),
-                            fecha.date(),
-                            0
-                        ))
-
-                    cursor.executemany(sql, data_to_insert)
-                    connection.commit()
-                    logger.info(f"✅ {len(data_to_insert)} comentarios insertados (duplicados ignorados)")
-            finally:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
-
-            # --- 💬 Enviar un solo comentario de respuesta ---
-            try:
-                last_comment = detailed_comments[-1]
-                author_id = last_comment.get("author_id")
-
-                reply_url = f"{os.getenv('TEAMWORK_BASE_URL')}/tasks/{task_id}/comments.json"
-                reply_body = f":white_check_mark: Mensaje recibido por el sistema."
-
-                reply_payload = {"comment": {"body": reply_body, "isPrivate": False}}
-
-                reply_resp = requests.post(
-                    reply_url,
-                    auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
-                    headers={"Content-Type": "application/json"},
-                    json=reply_payload,
-                    timeout=10
-                )
-
-                if reply_resp.status_code == 201:
-                    logger.info(f"💬 Respuesta automática publicada en la tarea {task_id}")
-                else:
-                    logger.warning(f"⚠️ No se pudo publicar la respuesta ({reply_resp.status_code})")
-
-            except Exception as reply_err:
-                logger.error(f"❌ Error al publicar respuesta automática: {reply_err}")
-
-        else:
-            logger.info("🟡 No se encontraron comentarios con @ProfesorF para insertar ni responder")
-
-        return {"status": "ok", "project_id": project_id, "task_id": task_id}
-
-    except HTTPException:
-        raise
     except Exception as e:
         logger.exception(f"💥 Error procesando webhook: {e}")
-        raise HTTPException(status_code=500, detail="Error interno del servidor")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")

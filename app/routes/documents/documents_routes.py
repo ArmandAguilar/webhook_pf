@@ -76,90 +76,112 @@ load_dotenv()
 TMP_DIR = Path("app/core/tmp")
 TMP_DIR.mkdir(exist_ok=True)
 
-@router.post("/webhook/document/get", tags=['TASK'])
+@router.post("/webhook/document/get", tags=["TASK"])
 async def teamwork_document_get(payload: WebhookDocumentPayload):
     """
-    Webhook que acepta y procesa archivos adjuntos subidos desde Teamwork.
+    Webhook para capturar archivos nuevos o actualizados desde Teamwork.
+
+    - Soporta eventos:
+        • file.created → obtiene `task_id` desde /files/{id}.json
+        • task.updated → consulta los attachments de la tarea
     """
     try:
         logger.info("🔹 Payload recibido:")
         logger.info(payload.model_dump_json(indent=4, ensure_ascii=False))
 
-        # Extraer datos principales
-        task_id = payload.task.id if payload.task else None
-        project_id = payload.project.id if payload.project else None
-
-        if not task_id or not project_id:
-            raise HTTPException(status_code=400, detail="Faltan 'task.id' o 'project.id' en el payload")
-
-        logger.info(f"Task ID: {task_id} | Project ID: {project_id}")
-        
-
-        # --- Consulta de la tarea ---
-        response = httpx.get(
-            f"{os.getenv('TEAMWORK_BASE_URL')}/projects/api/v3/tasks/{task_id}.json",
-            auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
-            timeout=10.0
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail="Error al consultar Teamwork")
-
-        task_data = response.json()
-        attachments = task_data.get("task", {}).get("attachments", [])
-        attachment_ids = [att["id"] for att in attachments if "id" in att]
-
-        logger.info(f"📎 Attachments encontrados: {attachment_ids}")
-
-        # --- Recuperar datos de cada attachment---
         attachments_data = {}
+        project_id = None
+        task_id = None
 
-        if attachment_ids:
-            attachments_data = {}
+        # =====================================================
+        # 1️⃣ CASO A: file.created → archivo nuevo
+        # =====================================================
+        if payload.file:
+            file_info = payload.file
+            logger.info("📄 Evento detectado: file.created")
 
-            for att_id in attachment_ids:
+            project_id = file_info.projectId
+            file_id = file_info.id
+            file_name = file_info.name or file_info.originalName
+
+            # --- Obtener el task_id desde Teamwork (relatedItems) ---
+            try:
+                teamwork_url = f"{os.getenv('TEAMWORK_BASE_URL')}/projects/api/v3/files/{file_id}.json"
+                resp = requests.get(teamwork_url, auth=(os.getenv('TEAMWORK_API_KEY'), "x"), timeout=10)
+
+                if resp.status_code == 200:
+                    file_data = resp.json().get("file", {})
+                    related_items = file_data.get("relatedItems", {})
+                    tasks = related_items.get("tasks", [])
+                    task_id = tasks[0] if tasks else None
+                    logger.info(f"📎 task_id obtenido: {task_id}")
+                else:
+                    logger.warning(f"⚠️ No se pudo obtener info del archivo {file_id}: {resp.status_code}")
+
+            except Exception as e:
+                logger.error(f"❌ Error consultando file info: {e}")
+
+            # --- Descargar el archivo (preferir downloadURL) ---
+            download_url = file_data.get("downloadURL") if "file_data" in locals() else None
+            if download_url:
                 try:
-                    # Obtener metadatos del archivo
-                    att_url = f"{os.getenv("TEAMWORK_BASE_URL")}/files/{att_id}.json"
-                    resp = requests.get(att_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=10)
-
+                    file_path = TMP_DIR / file_name
+                    resp = requests.get(download_url, auth=(os.getenv('TEAMWORK_API_KEY'), "x"), timeout=15)
                     if resp.status_code == 200:
-                        att_json = resp.json()
-                        file_info = att_json.get("file", {})
-
-                        attachments_data[att_id] = {
-                            "name": file_info.get("name"),
-                            "size": file_info.get("size"),
-                            "fecha": file_info.get("createdAt")
-                        }
-
-                        # Descargar archivo desde preview-url
-                        preview_url = file_info.get("preview-url") or file_info.get("preview-URL")
-                        if preview_url:
-                            file_name = file_info.get("name", f"{att_id}.file")
-                            file_path = TMP_DIR / file_name
-
-                            try:
-                                file_resp = requests.get(preview_url, auth=(os.getenv("TEAMWORK_API_KEY"), "x"), timeout=15, allow_redirects=True)
-                                if file_resp.status_code == 200:
-                                    file_path.write_bytes(file_resp.content)
-                                    logger.info(f"📥 Archivo descargado: {file_path}")
-                                else:
-                                    logger.warning(f"No se pudo descargar {file_name} ({file_resp.status_code})")
-                            except Exception as e:
-                                logger.error(f"Error descargando {file_name}: {e}")
-
+                        file_path.write_bytes(resp.content)
+                        logger.info(f"📥 Archivo descargado: {file_path}")
                     else:
-                        logger.warning(f"⚠️ No se pudo recuperar attachment {att_id}: {resp.status_code}")
-
+                        logger.warning(f"⚠️ No se pudo descargar {file_name} (status={resp.status_code})")
                 except Exception as e:
-                    logger.error(f"Error procesando attachment {att_id}: {e}")
-        # --- Insertar en la base de datos ---
+                    logger.error(f"❌ Error al descargar archivo: {e}")
+            else:
+                logger.warning("⚠️ No hay downloadURL disponible en el archivo.")
+
+            attachments_data[file_id] = {
+                "name": file_name,
+                "size": file_info.size,
+                "fecha": file_info.dateCreated,
+            }
+
+        # =====================================================
+        # 2️⃣ CASO B: task.updated → respaldo
+        # =====================================================
+        elif payload.task:
+            task_info = payload.task
+            task_id = task_info.id
+            project_id = task_info.projectId
+
+            logger.info(f"📎 Evento detectado: task.updated (task_id={task_id})")
+
+            response = requests.get(
+                f"{os.getenv('TEAMWORK_BASE_URL')}/projects/api/v3/tasks/{task_id}.json",
+                auth=(os.getenv('TEAMWORK_API_KEY'), "x"),
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                task_data = response.json().get("task", {})
+                attachments = task_data.get("attachments", [])
+                for att in attachments:
+                    attachments_data[att["id"]] = {
+                        "name": att.get("name"),
+                        "size": att.get("size"),
+                        "fecha": att.get("dateAttached"),
+                    }
+            else:
+                logger.warning(f"⚠️ Error al consultar tarea: {response.status_code}")
+
+        else:
+            logger.warning("⚠️ Payload no contiene datos válidos de file o task.")
+            return {"status": "ignored", "reason": "payload sin archivo o tarea"}
+
+        # =====================================================
+        # 3️⃣ Guardar en la base de datos
+        # =====================================================
         if attachments_data:
             try:
                 connection = dbMysql.conMysql()
                 with connection.cursor() as cursor:
-
-                    # Insertar todos los attachments, ignorando los que ya existan
                     sql = """
                         INSERT IGNORE INTO files_procceded 
                         (id_tw, id_tarea, id_file, file_name, size, fecha, procceded)
@@ -167,7 +189,7 @@ async def teamwork_document_get(payload: WebhookDocumentPayload):
                     """
 
                     data_to_insert = []
-                    for att_id, data in attachments_data.items():
+                    for file_id, data in attachments_data.items():
                         fecha_raw = data.get("fecha")
                         try:
                             fecha = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00")) if fecha_raw else datetime.utcnow()
@@ -177,7 +199,7 @@ async def teamwork_document_get(payload: WebhookDocumentPayload):
                         data_to_insert.append((
                             project_id,
                             task_id,
-                            att_id,
+                            file_id,
                             data.get("name"),
                             data.get("size"),
                             fecha,
@@ -186,32 +208,23 @@ async def teamwork_document_get(payload: WebhookDocumentPayload):
 
                     cursor.executemany(sql, data_to_insert)
                     connection.commit()
-                    logger.info(f"✅ {len(data_to_insert)} archivos procesados (duplicados ignorados)")
+                    logger.info(f"✅ {len(data_to_insert)} archivo(s) insertado(s) con project_id={project_id}, task_id={task_id}.")
 
-            except Exception as db_err:
-                logger.error(f"❌ Error al insertar en la base de datos: {db_err}")
-
+            except Exception as e:
+                logger.error(f"❌ Error al insertar en BD: {e}")
             finally:
                 try:
                     connection.close()
                 except Exception:
                     pass
 
-        # --- Construir respuesta ---
-        response_data = {
+        return {
             "status": "ok",
             "project_id": project_id,
             "task_id": task_id,
-            "attachment_ids": attachment_ids,
-            "attachments_data": attachments_data,
-            "reason": "Tarea y attachments consultados correctamente"
+            "attachments": attachments_data,
         }
 
-        logger.info(f"📤 Respuesta final: {response_data}")
-        return response_data
-
-    except HTTPException:
-        raise
     except Exception as e:
         logger.exception(f"💥 Error procesando webhook: {e}")
         raise HTTPException(status_code=500, detail="Error interno del servidor")

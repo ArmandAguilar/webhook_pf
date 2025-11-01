@@ -159,7 +159,7 @@ async def teamwork_task_comments(payload: dict):
         project_id = comment.get("projectId")
         comment_id = comment.get("id")
 
-        # ✅ CORRECCIÓN: el campo correcto es userId, no authorId
+        
         author_id = comment.get("userId") or payload.get("eventCreator", {}).get("id") or 0
 
         comment_body = comment.get("body", "")
@@ -219,11 +219,11 @@ async def teamwork_task_comments(payload: dict):
         try:
             reply_url = f"{os.getenv('TEAMWORK_BASE_URL')}/tasks/{task_id}/comments.json"
             reply_body = ":white_check_mark: Mensaje recibido por el sistema."
-            reply_payload = {"comment": {"body": reply_body, "isPrivate": False}}
+            reply_payload = {"comment": {"body": reply_body, "isPrivate": True, "notify": str(author_id)}}
 
             reply_resp = requests.post(
                 reply_url,
-                auth=(os.getenv("TEAMWORK_API_KEY"), "x"),
+                auth=(os.getenv("KEY_BOT_PF"), "x"),
                 headers={"Content-Type": "application/json"},
                 json=reply_payload,
                 timeout=10
